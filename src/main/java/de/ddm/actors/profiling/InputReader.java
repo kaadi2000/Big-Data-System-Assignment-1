@@ -1,5 +1,15 @@
 package de.ddm.actors.profiling;
 
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+import com.opencsv.CSVReader;
+import com.opencsv.exceptions.CsvValidationException;
+
+import akka.actor.IllegalActorStateException;
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.PostStop;
@@ -7,18 +17,11 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
-import com.opencsv.CSVReader;
-import com.opencsv.exceptions.CsvValidationException;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.InputConfigurationSingleton;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-
-import java.io.File;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 
 public class InputReader extends AbstractBehavior<InputReader.Message> {
 
@@ -35,6 +38,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	public static class ReadHeaderMessage implements Message {
 		private static final long serialVersionUID = 1729062814525657711L;
 		ActorRef<DependencyMiner.Message> replyTo;
+		
 	}
 
 	@Getter
@@ -58,9 +62,18 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 
 	private InputReader(ActorContext<Message> context, final int id, final File inputFile) throws IOException, CsvValidationException {
 		super(context);
+		if(inputFile == null || !inputFile.exists()){
+			if(inputFile == null)
+				throw new IllegalActorStateException("Input file is null");
+			else
+				throw new IllegalActorStateException("Input file does not exist");
+		}
+
+		
 		this.id = id;
 		this.reader = InputConfigurationSingleton.get().createCSVReader(inputFile);
 		this.header = InputConfigurationSingleton.get().getHeader(inputFile);
+		this.cachedRows = new ArrayList<>();
 		
 		if (InputConfigurationSingleton.get().isFileHasHeader())
 			this.reader.readNext();
@@ -73,6 +86,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	private final int id;
 	private final CSVReader reader;
 	private final String[] header;
+	private final List<String[]> cachedRows;
 
 	////////////////////
 	// Actor Behavior //
@@ -89,24 +103,37 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 
 	private Behavior<Message> handle(ReadHeaderMessage message) {
 		message.getReplyTo().tell(new DependencyMiner.HeaderMessage(this.id, this.header));
+		getContext().getLog().info("Header sent for file ID {}: {}", this.id, String.join(", ", this.header));
 		return this;
 	}
 
 	private Behavior<Message> handle(ReadBatchMessage message) throws IOException, CsvValidationException {
-		List<String[]> batch = new ArrayList<>(message.getBatchSize());
-		for (int i = 0; i < message.getBatchSize(); i++) {
-			String[] line = this.reader.readNext();
-			if (line == null)
-				break;
-			batch.add(line);
+		try{	
+			List<String[]> batch = new ArrayList<>(message.getBatchSize());
+			for (int i = 0; i < message.getBatchSize(); i++) {
+				String[] line = this.reader.readNext();
+				if (line == null)
+					break;
+				batch.add(line);
+			}
+			if(!batch.isEmpty()){
+				message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, batch));
+			}
+		}catch (IOException e){
+			getContext().getLog().error("Error reading batch", e);
+
+			//message.getReplyTo().tell(new DependencyMiner.Message());
 		}
 
-		message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, batch));
 		return this;
 	}
 
 	private Behavior<Message> handle(PostStop signal) throws IOException {
-		this.reader.close();
+		try{
+			this.reader.close();
+		}catch (IOException e){
+			getContext().getLog().error("Error closing reader for file ID: {}",this.id , e);
+		}
 		return this;
 	}
 }

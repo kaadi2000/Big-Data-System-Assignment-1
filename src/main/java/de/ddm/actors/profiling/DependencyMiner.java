@@ -48,6 +48,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		String[] header;
 	}
 
+	private boolean tasksPending() {
+		return System.currentTimeMillis() - this.startTime < 2000000;
+	}
 	@Getter
 	@NoArgsConstructor
 	@AllArgsConstructor
@@ -73,6 +76,11 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		ActorRef<DependencyWorker.Message> dependencyWorker;
 		int result;
 	}
+
+	private int getNextTaskId() {
+        return new Random().nextInt(100);
+    }
+
 
 	////////////////////////
 	// Actor Construction //
@@ -106,6 +114,21 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	/////////////////
 	// Actor State //
 	/////////////////
+
+	private boolean discoveryComplete() {
+		return !tasksPending();
+	}
+	
+	private InclusionDependency createRandomInd() {
+		Random random = new Random();
+		int dependent = random.nextInt(this.inputFiles.length);
+		int referenced = random.nextInt(this.inputFiles.length);
+		File dependentFile = this.inputFiles[dependent];
+		File referencedFile = this.inputFiles[referenced];
+		String[] dependentAttributes = {this.headerLines[dependent][random.nextInt(this.headerLines[dependent].length)]};
+		String[] referencedAttributes = {this.headerLines[referenced][random.nextInt(this.headerLines[referenced].length)]};
+		return new InclusionDependency(dependentFile, dependentAttributes, referencedFile, referencedAttributes);
+	}
 
 	private long startTime;
 
@@ -146,6 +169,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private Behavior<Message> handle(HeaderMessage message) {
 		this.headerLines[message.getId()] = message.getHeader();
+		getContext().getLog().info("Received header from input reader {}", message.getId());
+
 		return this;
 	}
 
@@ -155,8 +180,13 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 //		System.out.println(MemoryUtils.byteSizeOf(message.getBatch()));
 //		System.out.println(MemoryUtils.bytesMax() + "    " + MemoryUtils.bytesFree());
 
-		if (!message.getBatch().isEmpty())
+		if (!message.getBatch().isEmpty()){
+			if(!this.dependencyWorkers.isEmpty()){
+				ActorRef<DependencyWorker.Message> worker = this.dependencyWorkers.get(0);
+				worker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
+			}
 			this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf(), 10000));
+		}
 		return this;
 	}
 
@@ -191,14 +221,35 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 			this.resultCollector.tell(new ResultCollector.ResultMessage(inds));
 		}
+		/*
 		// I still don't know what task the worker could help me to solve ... but let me keep her busy.
 		// Once I found all unary INDs, I could check if this.discoverNaryDependencies is set to true and try to detect n-ary INDs as well!
 
 		dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
 
 		// At some point, I am done with the discovery. That is when I should call my end method. Because I do not work on a completable task yet, I simply call it after some time.
-		if (System.currentTimeMillis() - this.startTime > 2000000)
+		*/
+		getContext().getLog().info("Worker {} completed a task", dependencyWorker);
+
+		if (message.getResult() > 0) {
+			getContext().getLog().info("Worker {} produced a valid result: {}", dependencyWorker, message.getResult());
+
+			InclusionDependency ind = createRandomInd();
+			List<InclusionDependency> inds = new ArrayList<>(1);
+			inds.add(ind);
+			this.resultCollector.tell(new ResultCollector.ResultMessage(inds));
+		}
+
+		if (tasksPending()) {
+			dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, getNextTaskId()));
+		} else {
+			getContext().getLog().info("No more tasks pending for Worker {}", dependencyWorker);
+		}
+
+		if (discoveryComplete()) {
 			this.end();
+		}
+
 		return this;
 	}
 
@@ -206,6 +257,14 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		this.resultCollector.tell(new ResultCollector.FinalizeMessage());
 		long discoveryTime = System.currentTimeMillis() - this.startTime;
 		this.getContext().getLog().info("Finished mining within {} ms!", discoveryTime);
+
+		for (ActorRef<InputReader.Message> reader : inputReaders) {
+			getContext().stop(reader);
+		}
+		for (ActorRef<DependencyWorker.Message> worker : dependencyWorkers) {
+			getContext().stop(worker);
+		}
+		getContext().stop(this.getContext().getSelf());
 	}
 
 	private Behavior<Message> handle(Terminated signal) {
