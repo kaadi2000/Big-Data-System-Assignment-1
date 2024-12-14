@@ -1,5 +1,10 @@
 package de.ddm.actors.profiling;
 
+import java.util.HashSet;
+import java.util.List;
+import java.util.Random;
+import java.util.Set;
+
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.AbstractBehavior;
@@ -12,9 +17,6 @@ import de.ddm.serialization.AkkaSerializable;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-
-import java.util.Random;
-import java.util.Set;
 
 public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message> {
 
@@ -46,6 +48,30 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	// Actor Construction //
 	////////////////////////
 
+	public static class ValidateIndBatchMessage implements Message {
+		public final List<String[]> dependentColumn;
+        public final List<String[]> referencedColumn;
+        public final ActorRef<DependencyMiner.Message> replyTo;
+
+		public ValidateIndBatchMessage(List<String[]> dependentColumn, List<String[]> referencedColumn, ActorRef<DependencyMiner.Message> replyTo) {
+			try {
+				if (dependentColumn == null || referencedColumn == null){
+					throw new IllegalArgumentException("Invalid data in ValidateIndMessage: Null values!");
+				}
+				if (dependentColumn.isEmpty() || referencedColumn.isEmpty()){
+					throw new IllegalArgumentException("Invalid data in ValidateIndMessage: Empty columns!");
+				}
+			}
+			catch (IllegalArgumentException e){
+				e.printStackTrace();
+				System.out.println("Invalid data in ValidateIndMessage: Null or empty columns!");
+			}
+			this.dependentColumn = dependentColumn;
+            this.referencedColumn = referencedColumn;
+            this.replyTo = replyTo;
+        }
+	}
+	
 	public static final String DEFAULT_NAME = "dependencyWorker";
 
 	public static Behavior<Message> create() {
@@ -67,6 +93,8 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 	private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 
+
+	
 	////////////////////
 	// Actor Behavior //
 	////////////////////
@@ -76,8 +104,10 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		return newReceiveBuilder()
 				.onMessage(ReceptionistListingMessage.class, this::handle)
 				.onMessage(TaskMessage.class, this::handle)
+				.onMessage(ValidateIndBatchMessage.class, this::handleValidateIndBatch)
 				.build();
 	}
+	
 
 	private Behavior<Message> handle(ReceptionistListingMessage message) {
 		Set<ActorRef<DependencyMiner.Message>> dependencyMiners = message.getListing().getServiceInstances(DependencyMiner.dependencyMinerService);
@@ -86,8 +116,12 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		return this;
 	}
 
+
+
 	private Behavior<Message> handle(TaskMessage message) {
 		this.getContext().getLog().info("Working!");
+		this.getContext().getLog().info("Working on task ID: {}", message.getTask());
+
 		// I should probably know how to solve this task, but for now I just pretend some work...
 
 		int result = message.getTask();
@@ -99,6 +133,33 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 		LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result);
 		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(completionMessage, message.getDependencyMinerLargeMessageProxy()));
+
+		return this;
+	}
+
+	private Behavior<Message> handleValidateIndBatch(ValidateIndBatchMessage message) {
+		this.getContext().getLog().info("IND validation for dependent and referenced columns...");
+
+		Set<String> referencedSet = new HashSet<>();
+		for (String[] row : message.referencedColumn) {
+			referencedSet.add(row[0]);
+		}
+
+		boolean isValidInd = true;
+		for (String[] row : message.dependentColumn) {
+			if (!referencedSet.contains(row[0])) {
+				isValidInd = false;
+				break;
+			}
+		}
+
+		if (isValidInd) {
+			this.getContext().getLog().info("IND validated successfully!");
+			message.replyTo.tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), 1)); // Success
+		} else {
+			this.getContext().getLog().info("Could not validate IND!");
+			message.replyTo.tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), 0)); // Failure
+		}
 
 		return this;
 	}

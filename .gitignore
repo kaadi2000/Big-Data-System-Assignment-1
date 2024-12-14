@@ -43,4 +43,4 @@ release.properties
 .DS_Store
 
 # Application files
-results.txt
+#results.txt
