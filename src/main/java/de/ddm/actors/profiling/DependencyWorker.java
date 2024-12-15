@@ -1,5 +1,6 @@
 package de.ddm.actors.profiling;
 
+import java.io.File;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
@@ -14,6 +15,7 @@ import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.receptionist.Receptionist;
 import de.ddm.actors.patterns.LargeMessageProxy;
 import de.ddm.serialization.AkkaSerializable;
+import de.ddm.structures.InclusionDependency;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -41,7 +43,12 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	public static class TaskMessage implements Message {
 		private static final long serialVersionUID = -4667745204456518160L;
 		ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
-		int task;
+
+		File dependentFile;
+		String dependentColumn;
+	
+		File referencedFile;
+		String referencedColumn;
 	}
 
 	////////////////////////
@@ -49,11 +56,15 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	////////////////////////
 
 	public static class ValidateIndBatchMessage implements Message {
+		public final File dependentFile;
 		public final List<String[]> dependentColumn;
-        public final List<String[]> referencedColumn;
-        public final ActorRef<DependencyMiner.Message> replyTo;
+		public final File referencedFile;
+		public final List<String[]> referencedColumn;
+		public final ActorRef<DependencyMiner.Message> replyTo;
 
-		public ValidateIndBatchMessage(List<String[]> dependentColumn, List<String[]> referencedColumn, ActorRef<DependencyMiner.Message> replyTo) {
+		public ValidateIndBatchMessage(File dependentFile, List<String[]> dependentColumn, 
+									File referencedFile, List<String[]> referencedColumn, 
+									ActorRef<DependencyMiner.Message> replyTo) {
 			try {
 				if (dependentColumn == null || referencedColumn == null){
 					throw new IllegalArgumentException("Invalid data in ValidateIndMessage: Null values!");
@@ -66,9 +77,11 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 				e.printStackTrace();
 				System.out.println("Invalid data in ValidateIndMessage: Null or empty columns!");
 			}
+			this.dependentFile = dependentFile;
 			this.dependentColumn = dependentColumn;
-            this.referencedColumn = referencedColumn;
-            this.replyTo = replyTo;
+			this.referencedFile = referencedFile;
+			this.referencedColumn = referencedColumn;
+			this.replyTo = replyTo;
         }
 	}
 	
@@ -117,28 +130,27 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	}
 
 
-
 	private Behavior<Message> handle(TaskMessage message) {
-		this.getContext().getLog().info("Working!");
-		this.getContext().getLog().info("Working on task ID: {}", message.getTask());
-
-		// I should probably know how to solve this task, but for now I just pretend some work...
-
-		int result = message.getTask();
+		this.getContext().getLog().info("Validating IND: {}[{}] -> {}[{}]", message.getDependentFile().getName(), message.getDependentColumn(), message.getReferencedFile().getName(), message.getReferencedColumn());
+	
+		// Perform some processing (simulate work or validation logic)
 		long time = System.currentTimeMillis();
 		Random rand = new Random();
 		int runtime = (rand.nextInt(2) + 2) * 1000;
-		while (System.currentTimeMillis() - time < runtime)
-			result = ((int) Math.abs(Math.sqrt(result)) * result) % 1334525;
-
-		LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result);
+		while (System.currentTimeMillis() - time < runtime) {
+			// Simulate computation 
+		}
+		InclusionDependency realResult = new InclusionDependency(message.getDependentFile(), new String[]{message.getDependentColumn()}, message.getReferencedFile(), new String[]{message.getReferencedColumn()});
+	
+		LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), realResult);
+	
 		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(completionMessage, message.getDependencyMinerLargeMessageProxy()));
-
+	
 		return this;
 	}
 
 	private Behavior<Message> handleValidateIndBatch(ValidateIndBatchMessage message) {
-		this.getContext().getLog().info("IND validation for dependent and referenced columns...");
+		this.getContext().getLog().info("Validating IND for dependent field ID: {} and referenced field ID: {}", message.dependentFile, message.referencedFile);
 
 		Set<String> referencedSet = new HashSet<>();
 		for (String[] row : message.referencedColumn) {
@@ -153,14 +165,27 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 			}
 		}
 
+		InclusionDependency result = null;
 		if (isValidInd) {
-			this.getContext().getLog().info("IND validated successfully!");
-			message.replyTo.tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), 1)); // Success
+			this.getContext().getLog().info("IND validated successfully! DependentFile: {}, ReferencedFile: {}",
+				message.dependentFile, message.referencedFile);
+
+			result = new InclusionDependency(
+				message.dependentFile,
+				new String[]{message.dependentColumn.get(0)[0]},
+				message.referencedFile,
+				new String[]{message.referencedColumn.get(0)[0]}
+			);
+			this.getContext().getLog().info("IND validation for DependentFile: {} -> ReferencedFile: {} is successful", message.dependentFile, message.referencedFile);
 		} else {
-			this.getContext().getLog().info("Could not validate IND!");
-			message.replyTo.tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), 0)); // Failure
+			this.getContext().getLog().info("IND validation failed for DependentFile: {} -> ReferencedFile: {}",
+				message.dependentFile, message.referencedFile);
 		}
 
+		// Reply back with the CompletionMessage
+		message.replyTo.tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result));
 		return this;
 	}
+
+	
 }
