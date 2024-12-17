@@ -4,7 +4,9 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import akka.actor.typed.Behavior;
 import akka.actor.typed.PostStop;
@@ -63,6 +65,7 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 			throw new IOException("Could not create result file: " + file.getName());
 
 		this.writer = new BufferedWriter(new FileWriter(file));
+		this.processedResults = new HashSet<>();
 		this.getContext().getLog().info("ResultCollector Initialized. Output file: {}", file.getAbsolutePath());
 	}
 
@@ -72,17 +75,14 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 
 	private final BufferedWriter writer;
 
+	private final Set<InclusionDependency> processedResults;
 	////////////////////
 	// Actor Behavior //
 	////////////////////
 
 	@Override
 	public Receive<Message> createReceive() {
-		return newReceiveBuilder()
-				.onMessage(ResultMessage.class, this::handle)
-				.onMessage(FinalizeMessage.class, this::handle)
-				.onSignal(PostStop.class, this::handle)
-				.build();
+		return newReceiveBuilder().onMessage(ResultMessage.class, this::handle).onMessage(FinalizeMessage.class, this::handle).onSignal(PostStop.class, this::handle).build();
 	}
 
 	private Behavior<Message> handle(ResultMessage message) throws IOException {
@@ -90,9 +90,13 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 
 		for (InclusionDependency ind : message.getInclusionDependencies()) {
 			try {
-				if (ind != null){
+				if (ind != null && !processedResults.contains(ind)){
 					this.writer.write(ind.toString());
 					this.writer.newLine();
+					processedResults.add(ind);
+				}
+				else {
+					this.getContext().getLog().info("Duplicate results found. Skipped: {}", ind);
 				}
 			} catch (IOException e) {
 				this.getContext().getLog().error("Error writing IND to file: {}", e.getMessage());
