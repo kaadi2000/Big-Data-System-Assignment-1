@@ -82,6 +82,15 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
         return new Random().nextInt(100);
     }
 
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class EndOfFileMessage implements Message {
+		private static final long serialVersionUID = 1L;
+		private int id;
+		private ActorRef<DependencyMiner.Message> replyTo;
+	}
+
 
 	////////////////////////
 	// Actor Construction //
@@ -347,6 +356,22 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			getContext().stop(worker);
 		}
 		getContext().stop(this.getContext().getSelf());
+	}
+
+	private int eofCount = 0;
+
+	private Behavior<Message> handle(EndOfFileMessage message) {
+		this.getContext().getLog().info("EOF reached for InputReader {}", message.getReplyTo());
+		eofCount++;
+
+		if (eofCount == inputReaders.size()) {
+			this.getContext().getLog().info("All InputReaders have completed. No more batches will be processed.");
+			if (discoveryComplete()) {
+				this.end();
+			}
+		}
+
+		return this;
 	}
 
 

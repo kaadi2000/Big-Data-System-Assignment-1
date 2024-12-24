@@ -46,6 +46,14 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
         int batchSize;
     }
 
+    @Getter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class EndOfFileMessage implements Message {
+        private static final long serialVersionUID = 123456789L;
+        ActorRef<DependencyMiner.Message> replyTo;
+    }
+
     ////////////////////////
     // Actor Construction //
     ////////////////////////
@@ -66,6 +74,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
         this.reader = InputConfigurationSingleton.get().createCSVReader(inputFile);
         this.header = InputConfigurationSingleton.get().getHeader(inputFile);
         this.cachedRows = new ArrayList<>();
+        this.eofReached = false;
 
         if (InputConfigurationSingleton.get().isFileHasHeader()) {
             String[] headerRow = this.reader.readNext();
@@ -81,6 +90,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
     private final CSVReader reader;
     private final String[] header;
     private final List<String[]> cachedRows;
+    private boolean eofReached;
 
     ////////////////////
     // Actor Behavior //
@@ -110,6 +120,11 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
             if (line == null){
 				break;
 			}
+
+            if(isBlankRow(cleanRow(line))){
+                continue;
+            }
+
             batch.add(line);
             linesRead++;
         }
@@ -121,7 +136,30 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
             getContext().getLog().info("No more rows to read for file ID {}", this.id);
         }
 
+        if(eofReached) {
+            message.getReplyTo().tell(new DependencyMiner.EndOfFileMessage(this.id, message.getReplyTo()));
+            getContext().getLog().info("End of file reached for file ID {}", this.id);
+        }
+
         return this;
+    }
+
+    private String[] cleanRow(String[] row) {
+        for (int i = 0; i < row.length; i++) {
+            if (row[i] != null) {
+                row[i] = row[i].trim(); // Remove leading and trailing spaces
+            }
+        }
+        return row;
+    }
+    
+    private boolean isBlankRow(String[] row) {
+        for (String value : row) {
+            if (value != null && !value.isEmpty()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private Behavior<Message> handle(PostStop signal) throws IOException {
