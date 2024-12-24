@@ -149,6 +149,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private final List<ActorRef<InputReader.Message>> inputReaders;
 	private final ActorRef<ResultCollector.Message> resultCollector;
 	private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
+	private int pendingTasks = 0;
+	private int completedWorkers = 0;
+	private final Set<String> validatedColumnPairs = new HashSet<>();
 
 	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
 
@@ -221,17 +224,28 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			}
 		}
 	}
+	private String generateColumnPairKey(String dependentColumn, String referencedColumn) {
+		return dependentColumn + "->" + referencedColumn;
+	}
 
 	private int workerIndex = 0;
 	
 	private void sendValidationTask(int dependentFileId, String dependentColumn, 
                                 int referencedFileId, String referencedColumn) {
+
+		String columnPairKey = generateColumnPairKey(dependentColumn, referencedColumn);
+
+		if (validatedColumnPairs.contains(columnPairKey)) {
+			getContext().getLog().info("Validation skipped for already validated pair: {} -> {}", dependentColumn, referencedColumn);
+			return;
+		}
 		getContext().getLog().info("Preparing task for validation: {}[{}] -> {}[{}]", inputFiles[dependentFileId].getName(), dependentColumn, inputFiles[referencedFileId].getName(), referencedColumn);
 
 		// Get the next worker in round-robin fashion
 		ActorRef<DependencyWorker.Message> worker = this.dependencyWorkers.get(workerIndex);
 		workerIndex = (workerIndex + 1) % this.dependencyWorkers.size();
-
+		
+		pendingTasks++;
 		worker.tell(new DependencyWorker.TaskMessage(
 			this.largeMessageProxy, inputFiles[dependentFileId], dependentColumn, inputFiles[referencedFileId], referencedColumn));
 
@@ -323,6 +337,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		if (message.getResult() != null) {
 			InclusionDependency ind = message.getResult();
 			this.getContext().getLog().info("Worker {} produced a valid IND: {}", dependencyWorker, ind);
+
+			String columnPairKey = generateColumnPairKey(ind.getDependentAttributes()[0], ind.getReferencedAttributes()[0]);
+        	validatedColumnPairs.add(columnPairKey);
 	
 			List<InclusionDependency> inds = new ArrayList<>(1);
 			inds.add(ind);
@@ -330,6 +347,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		} else {
 			this.getContext().getLog().info("Worker {} reported no valid IND.", dependencyWorker);
 		}
+
+		pendingTasks--;
+		checkForCompletion();
 	
 		if (tasksPending()) {
 			dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, inputFiles[0],"dependentColumnName", inputFiles[1], "referencedColumnName"));
@@ -374,10 +394,18 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		return this;
 	}
 
+	private void checkForCompletion() {
+		if (pendingTasks == 0 && completedWorkers == dependencyWorkers.size()) {
+			this.getContext().getLog().info("All tasks completed. Shutting down the master.");
+			end();
+		}
+	}
 
 	private Behavior<Message> handle(Terminated signal) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = signal.getRef().unsafeUpcast();
 		this.dependencyWorkers.remove(dependencyWorker);
+		completedWorkers++;
+		checkForCompletion();
 		return this;
 	}
 }
