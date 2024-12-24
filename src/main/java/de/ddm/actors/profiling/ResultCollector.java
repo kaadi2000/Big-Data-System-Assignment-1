@@ -96,7 +96,7 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 					processedResults.add(ind);
 				}
 				else {
-					this.getContext().getLog().info("Duplicate results found. Skipped: {}", ind);
+					this.getContext().getLog().info("Duplicate or NULL results found. Skipped: {}", ind);
 				}
 			} catch (IOException e) {
 				this.getContext().getLog().error("Error writing IND to file: {}", e.getMessage());

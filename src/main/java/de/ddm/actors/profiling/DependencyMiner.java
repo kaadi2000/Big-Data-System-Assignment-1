@@ -204,7 +204,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	
 				for (String dependentColumn : this.headerLines[i]) {
 					for (String referencedColumn : this.headerLines[j]) {
-						sendValidationTask(i, dependentColumn, j, referencedColumn);
+						if (!dependentColumn.isEmpty() && !referencedColumn.isEmpty()) {
+							sendValidationTask(i, dependentColumn, j, referencedColumn);
+						}
 					}
 				}
 			}
@@ -236,12 +238,16 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 //		System.out.println(MemoryUtils.byteSizeOf(message.getBatch()));
 //		System.out.println(MemoryUtils.bytesMax() + "    " + MemoryUtils.bytesFree());
 
-		if (!message.getBatch().isEmpty()){
-			if(!this.dependencyWorkers.isEmpty()){
-				ActorRef<DependencyWorker.Message> worker = this.dependencyWorkers.get(0);
-				worker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, inputFiles[0], "DependentColumnName",inputFiles[1],"ReferencedColumnName" ));
+		if (!message.getBatch().isEmpty() && !this.dependencyWorkers.isEmpty()) {
+			String[] dependentColumns = this.headerLines[0];
+			String[] referencedColumns = this.headerLines[1];
+
+			for (String dependentColumn : dependentColumns) {
+				for (String referencedColumn : referencedColumns) {
+					ActorRef<DependencyWorker.Message> worker = this.dependencyWorkers.get(0);
+					worker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, inputFiles[0], dependentColumn, inputFiles[1], referencedColumn));
+				}
 			}
-			this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf(), 10000));
 		}
 		return this;
 	}
@@ -264,37 +270,42 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	}
 
 	private Behavior<Message> handleValidateIndBatch(ValidateIndBatchMessage message) {
-		this.getContext().getLog().info("Validating IND for dependent file: {} and referenced file: {}...", message.dependentFile.getName(), message.referencedFile.getName());
+		this.getContext().getLog().info("Validating IND for dependent field ID: {} and referenced field ID: {}", message.dependentFile, message.referencedFile);
+	
 
 		Set<String> referencedSet = new HashSet<>();
 		for (String[] row : message.referencedColumn) {
-			referencedSet.add(row[0]); // Assuming single-column data
+			if (row[0] != null) {
+				referencedSet.add(row[0].trim());
+			}
 		}
+
 
 		boolean isValidInd = true;
 		for (String[] row : message.dependentColumn) {
-			if (!referencedSet.contains(row[0])) {
+			if (row[0] == null || !referencedSet.contains(row[0].trim())) {
 				isValidInd = false;
 				break;
 			}
 		}
-
+	
 		InclusionDependency result = null;
 		if (isValidInd) {
 			result = new InclusionDependency(
-						message.dependentFile,
-						new String[]{message.dependentColumn.get(0)[0]},
-						message.referencedFile,
-						new String[]{message.referencedColumn.get(0)[0]}
-);
-			this.getContext().getLog().info("IND validated successfully!");
+				message.dependentFile,
+				new String[]{message.dependentColumn.get(0)[0]},
+				message.referencedFile,
+				new String[]{message.referencedColumn.get(0)[0]}
+			);
+			this.getContext().getLog().info("IND validated successfully! {}", result);
 		} else {
-			this.getContext().getLog().info("IND validation failed!");
+			this.getContext().getLog().info("Invalid IND for DependentFile: {} -> ReferencedFile: {}", message.dependentFile.getName(), message.referencedFile.getName());
 		}
-
+	
 		message.replyTo.tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf().unsafeUpcast(), result));
 		return this;
 	}
+	
 
 	private Behavior<Message> handle(CompletionMessage message) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();

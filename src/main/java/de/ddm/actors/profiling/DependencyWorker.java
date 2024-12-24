@@ -154,12 +154,14 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 		Set<String> referencedSet = new HashSet<>();
 		for (String[] row : message.referencedColumn) {
-			referencedSet.add(row[0]);
+			if(row[0] != null){
+				referencedSet.add(row[0]);
+			}
 		}
 
 		boolean isValidInd = true;
 		for (String[] row : message.dependentColumn) {
-			if (!referencedSet.contains(row[0])) {
+			if (row[0] == null || row[0].isEmpty() || !referencedSet.contains(row[0])) {
 				isValidInd = false;
 				break;
 			}
@@ -167,8 +169,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 		InclusionDependency result = null;
 		if (isValidInd) {
-			this.getContext().getLog().info("IND validated successfully! DependentFile: {}, ReferencedFile: {}",
-				message.dependentFile, message.referencedFile);
+			this.getContext().getLog().info("IND validated successfully! DependentFile: {}, ReferencedFile: {}", message.dependentFile.getName(), message.referencedFile.getName());
 
 			result = new InclusionDependency(
 				message.dependentFile,
@@ -176,10 +177,9 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 				message.referencedFile,
 				new String[]{message.referencedColumn.get(0)[0]}
 			);
-			this.getContext().getLog().info("IND validation for DependentFile: {} -> ReferencedFile: {} is successful", message.dependentFile, message.referencedFile);
+			this.getContext().getLog().info("IND validation for DependentFile: {} -> ReferencedFile: {} is successful", message.dependentFile.getName(), message.referencedFile.getName());
 		} else {
-			this.getContext().getLog().info("IND validation failed for DependentFile: {} -> ReferencedFile: {}",
-				message.dependentFile, message.referencedFile);
+			this.getContext().getLog().info("Invalid IND for DependentFile: {} -> ReferencedFile: {}", message.dependentFile, message.referencedFile);
 		}
 
 		// Reply back with the CompletionMessage
