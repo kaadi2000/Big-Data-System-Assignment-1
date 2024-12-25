@@ -151,39 +151,38 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 	private Behavior<Message> handleValidateIndBatch(ValidateIndBatchMessage message) {
 		this.getContext().getLog().info("Validating IND for dependent field ID: {} and referenced field ID: {}", message.dependentFile, message.referencedFile);
+	
 
 		Set<String> referencedSet = new HashSet<>();
 		for (String[] row : message.referencedColumn) {
-			if(row[0] != null){
+			if (row[0] != null || !row[0].trim().isEmpty()) {
 				referencedSet.add(row[0]);
 			}
 		}
 
+
 		boolean isValidInd = true;
 		for (String[] row : message.dependentColumn) {
-			if (row[0] == null || row[0].isEmpty() || !referencedSet.contains(row[0])) {
+			if (row[0] == null || row[0].trim().isEmpty() || !referencedSet.contains(row[0])) {
 				isValidInd = false;
 				break;
 			}
 		}
-
+	
 		InclusionDependency result = null;
 		if (isValidInd) {
-			this.getContext().getLog().info("IND validated successfully! DependentFile: {}, ReferencedFile: {}", message.dependentFile.getName(), message.referencedFile.getName());
-
 			result = new InclusionDependency(
 				message.dependentFile,
 				new String[]{message.dependentColumn.get(0)[0]},
 				message.referencedFile,
 				new String[]{message.referencedColumn.get(0)[0]}
 			);
-			this.getContext().getLog().info("IND validation for DependentFile: {} -> ReferencedFile: {} is successful", message.dependentFile.getName(), message.referencedFile.getName());
+			this.getContext().getLog().info("IND validated successfully! {}", result);
 		} else {
-			this.getContext().getLog().info("Invalid IND for DependentFile: {} -> ReferencedFile: {}", message.dependentFile, message.referencedFile);
+			this.getContext().getLog().info("Invalid IND for DependentFile: {} -> ReferencedFile: {}", message.dependentFile.getName(), message.referencedFile.getName());
 		}
-
-		// Reply back with the CompletionMessage
-		message.replyTo.tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result));
+	
+		message.replyTo.tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf().unsafeUpcast(), result));
 		return this;
 	}
 

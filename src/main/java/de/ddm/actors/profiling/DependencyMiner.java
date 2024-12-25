@@ -2,8 +2,10 @@ package de.ddm.actors.profiling;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 
@@ -154,6 +156,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private final Set<String> validatedColumnPairs = new HashSet<>();
 
 	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
+	private final Map<String, Set<String>> dependencyGraph = new HashMap<>();
+
 
 	////////////////////
 	// Actor Behavior //
@@ -215,8 +219,30 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 				}
 	
 				for (String dependentColumn : this.headerLines[i]) {
+					if (dependentColumn.isEmpty()) {
+						continue;
+					}
 					for (String referencedColumn : this.headerLines[j]) {
 						if (!dependentColumn.isEmpty() && !referencedColumn.isEmpty()) {
+							if(referencedColumn.isEmpty()) {
+								continue;
+							}
+
+							if(isAlreadyValidated(dependentColumn, referencedColumn)){
+								getContext().getLog().info("Skipping already validated IND: {} -> {}", dependentColumn, referencedColumn);
+								continue;
+							}
+
+							if (dependentColumn.equals(referencedColumn)) {
+								getContext().getLog().info("Skipping reflexive pair: {} -> {}", dependentColumn, referencedColumn);
+								continue;
+							}
+
+							if (isTransitiveDependency(dependentColumn, referencedColumn)) {
+								getContext().getLog().info("Skipping transitive dependency: {} -> {}", dependentColumn, referencedColumn);
+								continue;
+							}
+
 							sendValidationTask(i, dependentColumn, j, referencedColumn);
 						}
 					}
@@ -224,8 +250,50 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			}
 		}
 	}
+
+	private void addToDependencyGraph(String dependentColumn, String referencedColumn) {
+		dependencyGraph.putIfAbsent(dependentColumn, new HashSet<>());
+		dependencyGraph.get(dependentColumn).add(referencedColumn);
+	}
+	
+	private boolean isTransitiveDependency(String dependentColumn, String referencedColumn) {
+		if (!dependencyGraph.containsKey(dependentColumn)) {
+			return false;
+		}
+		Set<String> visited = new HashSet<>();
+		return hasPath(dependentColumn, referencedColumn, visited);
+	}
+	
+	private boolean hasPath(String current, String target, Set<String> visited) {
+		if (current.equals(target)) {
+			return true;
+		}
+		visited.add(current);
+		if (!dependencyGraph.containsKey(current)) {
+			return false;
+		}
+		for (String neighbor : dependencyGraph.get(current)) {
+			if (!visited.contains(neighbor) && hasPath(neighbor, target, visited)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+
+
 	private String generateColumnPairKey(String dependentColumn, String referencedColumn) {
 		return dependentColumn + "->" + referencedColumn;
+	}
+
+	private boolean isAlreadyValidated(String dependentColumn, String referencedColumn) {
+		String columnPairKey = generateColumnPairKey(dependentColumn, referencedColumn);
+		return validatedColumnPairs.contains(columnPairKey);
+	}
+	
+	private void markAsValidated(String dependentColumn, String referencedColumn) {
+		String columnPairKey = generateColumnPairKey(dependentColumn, referencedColumn);
+		validatedColumnPairs.add(columnPairKey);
 	}
 
 	private int workerIndex = 0;
@@ -298,15 +366,15 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 		Set<String> referencedSet = new HashSet<>();
 		for (String[] row : message.referencedColumn) {
-			if (row[0] != null) {
-				referencedSet.add(row[0].trim());
+			if (row[0] != null || !row[0].trim().isEmpty()) {
+				referencedSet.add(row[0]);
 			}
 		}
 
 
 		boolean isValidInd = true;
 		for (String[] row : message.dependentColumn) {
-			if (row[0] == null || !referencedSet.contains(row[0].trim())) {
+			if (row[0] == null || row[0].trim().isEmpty() || !referencedSet.contains(row[0])) {
 				isValidInd = false;
 				break;
 			}
@@ -337,9 +405,13 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		if (message.getResult() != null) {
 			InclusionDependency ind = message.getResult();
 			this.getContext().getLog().info("Worker {} produced a valid IND: {}", dependencyWorker, ind);
+			String dependentColumn = ind.getDependentAttributes()[0];
+        	String referencedColumn = ind.getReferencedAttributes()[0];
 
-			String columnPairKey = generateColumnPairKey(ind.getDependentAttributes()[0], ind.getReferencedAttributes()[0]);
-        	validatedColumnPairs.add(columnPairKey);
+			markAsValidated(dependentColumn, referencedColumn);
+        	markAsValidated(referencedColumn, dependentColumn);
+
+			addToDependencyGraph(dependentColumn, referencedColumn);
 	
 			List<InclusionDependency> inds = new ArrayList<>(1);
 			inds.add(ind);
