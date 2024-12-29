@@ -153,150 +153,156 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 	private int pendingTasks = 0;
 	private int completedWorkers = 0;
-	private final Set<String> validatedColumnPairs = new HashSet<>();
-
-	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
-	private final Map<String, Set<String>> dependencyGraph = new HashMap<>();
-
-	private final Map<ActorRef<DependencyWorker.Message>, Integer> workerTaskTracker = new HashMap<>();
-
-
-
-	////////////////////
-	// Actor Behavior //
-	////////////////////
-
-	@Override
-	public Receive<Message> createReceive() {
-		return newReceiveBuilder()
-				.onMessage(StartMessage.class, this::handle)
-				.onMessage(BatchMessage.class, this::handle)
-				.onMessage(HeaderMessage.class, this::handle)
-				.onMessage(RegistrationMessage.class, this::handle)
-				.onMessage(CompletionMessage.class, this::handle)
-				.onSignal(Terminated.class, this::handle)
-				.build();
-	}
-
-	private Behavior<Message> handle(StartMessage message) {
-		for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
-			inputReader.tell(new InputReader.ReadHeaderMessage(this.getContext().getSelf()));
-		for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
-			inputReader.tell(new InputReader.ReadBatchMessage(this.getContext().getSelf(), 10000));
-		this.startTime = System.currentTimeMillis();
-		return this;
-	}
-
-	private Behavior<Message> handle(HeaderMessage message) {
-		this.headerLines[message.getId()] = message.getHeader();
-		getContext().getLog().info("Received header from input reader {}", message.getId());
-
-		if(allHeadersReceived()){
-			this.getContext().getLog().info("All headers received!");
-			try {
-				generateCandidates();
-				this.getContext().getLog().info("Canditates generation succefully completed!");
-			}
-			catch (Exception e) {
-				this.getContext().getLog().error("Error while generating candidates: {}", e.getMessage());
-			}
-		}
-
-		return this;
-	}
-
-	private boolean allHeadersReceived() {
-		for (String[] headerLine : this.headerLines){
-			if (headerLine == null){
-				return false;
-			}
-		}
-		return true;
-	}
-
-	private void generateCandidates() {
-		for (int i = 0; i < inputFiles.length; i++) {
-			for (int j = 0; j < inputFiles.length; j++) {
-				if (i == j){
-					continue;
-				}
+	private final static Set<String> validatedColumnPairs = new HashSet<>();
 	
-				for (String dependentColumn : this.headerLines[i]) {
-					if (dependentColumn.isEmpty()) {
+		private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
+		private final Map<String, Set<String>> dependencyGraph = new HashMap<>();
+	
+		private final Map<ActorRef<DependencyWorker.Message>, Integer> workerTaskTracker = new HashMap<>();
+	
+	
+	
+		////////////////////
+		// Actor Behavior //
+		////////////////////
+	
+		@Override
+		public Receive<Message> createReceive() {
+			return newReceiveBuilder()
+					.onMessage(StartMessage.class, this::handle)
+					.onMessage(BatchMessage.class, this::handle)
+					.onMessage(HeaderMessage.class, this::handle)
+					.onMessage(RegistrationMessage.class, this::handle)
+					.onMessage(CompletionMessage.class, this::handle)
+					.onSignal(Terminated.class, this::handle)
+					.build();
+		}
+	
+		private Behavior<Message> handle(StartMessage message) {
+			for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
+				inputReader.tell(new InputReader.ReadHeaderMessage(this.getContext().getSelf()));
+			for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
+				inputReader.tell(new InputReader.ReadBatchMessage(this.getContext().getSelf(), 10000));
+			this.startTime = System.currentTimeMillis();
+			return this;
+		}
+	
+		private Behavior<Message> handle(HeaderMessage message) {
+			this.headerLines[message.getId()] = message.getHeader();
+			getContext().getLog().info("Received header from input reader {}", message.getId());
+	
+			if(allHeadersReceived()){
+				this.getContext().getLog().info("All headers received!");
+				try {
+					generateCandidates();
+					this.getContext().getLog().info("Canditates generation succefully completed!");
+				}
+				catch (Exception e) {
+					this.getContext().getLog().error("Error while generating candidates: {}", e.getMessage());
+				}
+			}
+	
+			return this;
+		}
+	
+		private boolean allHeadersReceived() {
+			for (String[] headerLine : this.headerLines){
+				if (headerLine == null){
+					return false;
+				}
+			}
+			return true;
+		}
+	
+		private void generateCandidates() {
+			for (int i = 0; i < inputFiles.length; i++) {
+				for (int j = 0; j < inputFiles.length; j++) {
+					if (i == j){
 						continue;
 					}
-					for (String referencedColumn : this.headerLines[j]) {
-						if (!dependentColumn.isEmpty() && !referencedColumn.isEmpty()) {
-							if(referencedColumn.isEmpty()) {
-								continue;
+		
+					for (String dependentColumn : this.headerLines[i]) {
+						if (dependentColumn.isEmpty()) {
+							continue;
+						}
+						for (String referencedColumn : this.headerLines[j]) {
+							if (!dependentColumn.isEmpty() && !referencedColumn.isEmpty()) {
+								if(referencedColumn.isEmpty()) {
+									continue;
+								}
+	
+								if(isAlreadyValidated(dependentColumn, referencedColumn)){
+									getContext().getLog().info("Skipping already validated IND: {} -> {}", dependentColumn, referencedColumn);
+									continue;
+								}
+	
+								if (dependentColumn.equals(referencedColumn)) {
+									getContext().getLog().info("Skipping reflexive pair: {} -> {}", dependentColumn, referencedColumn);
+									continue;
+								}
+	
+								if (isTransitiveDependency(dependentColumn, referencedColumn)) {
+									getContext().getLog().info("Skipping transitive dependency: {} -> {}", dependentColumn, referencedColumn);
+									continue;
+								}
+	
+								sendValidationTask(i, dependentColumn, j, referencedColumn);
 							}
-
-							if(isAlreadyValidated(dependentColumn, referencedColumn)){
-								getContext().getLog().info("Skipping already validated IND: {} -> {}", dependentColumn, referencedColumn);
-								continue;
-							}
-
-							if (dependentColumn.equals(referencedColumn)) {
-								getContext().getLog().info("Skipping reflexive pair: {} -> {}", dependentColumn, referencedColumn);
-								continue;
-							}
-
-							if (isTransitiveDependency(dependentColumn, referencedColumn)) {
-								getContext().getLog().info("Skipping transitive dependency: {} -> {}", dependentColumn, referencedColumn);
-								continue;
-							}
-
-							sendValidationTask(i, dependentColumn, j, referencedColumn);
 						}
 					}
 				}
 			}
 		}
-	}
-
-	private void addToDependencyGraph(String dependentColumn, String referencedColumn) {
-		dependencyGraph.putIfAbsent(dependentColumn, new HashSet<>());
-		dependencyGraph.get(dependentColumn).add(referencedColumn);
-	}
 	
-	private boolean isTransitiveDependency(String dependentColumn, String referencedColumn) {
-		if (!dependencyGraph.containsKey(dependentColumn)) {
-			return false;
+		private void addToDependencyGraph(String dependentColumn, String referencedColumn) {
+			dependencyGraph.putIfAbsent(dependentColumn, new HashSet<>());
+			dependencyGraph.get(dependentColumn).add(referencedColumn);
 		}
-		Set<String> visited = new HashSet<>();
-		return hasPath(dependentColumn, referencedColumn, visited);
-	}
-	
-	private boolean hasPath(String current, String target, Set<String> visited) {
-		if (current.equals(target)) {
-			return true;
+		
+		private boolean isTransitiveDependency(String dependentColumn, String referencedColumn) {
+			if (!dependencyGraph.containsKey(dependentColumn)) {
+				return false;
+			}
+			Set<String> visited = new HashSet<>();
+			return hasPath(dependentColumn, referencedColumn, visited);
 		}
-		visited.add(current);
-		if (!dependencyGraph.containsKey(current)) {
-			return false;
-		}
-		for (String neighbor : dependencyGraph.get(current)) {
-			if (!visited.contains(neighbor) && hasPath(neighbor, target, visited)) {
+		
+		private boolean hasPath(String current, String target, Set<String> visited) {
+			if (current.equals(target)) {
 				return true;
 			}
+			visited.add(current);
+			if (!dependencyGraph.containsKey(current)) {
+				return false;
+			}
+			for (String neighbor : dependencyGraph.get(current)) {
+				if (!visited.contains(neighbor) && hasPath(neighbor, target, visited)) {
+					return true;
+				}
+			}
+			return false;
 		}
-		return false;
-	}
-
-
-
-	private String generateColumnPairKey(String dependentColumn, String referencedColumn) {
-		return dependentColumn + "->" + referencedColumn;
-	}
-
-	private boolean isAlreadyValidated(String dependentColumn, String referencedColumn) {
-		String columnPairKey = generateColumnPairKey(dependentColumn, referencedColumn);
-		return validatedColumnPairs.contains(columnPairKey);
-	}
 	
-	private void markAsValidated(String dependentColumn, String referencedColumn) {
-		String columnPairKey = generateColumnPairKey(dependentColumn, referencedColumn);
-		validatedColumnPairs.add(columnPairKey);
+	
+	
+		private String generateColumnPairKey(String dependentColumn, String referencedColumn) {
+			return dependentColumn + "->" + referencedColumn;
+		}
+	
+		private boolean isAlreadyValidated(String dependentColumn, String referencedColumn) {
+			String columnPairKey = generateColumnPairKey(dependentColumn, referencedColumn);
+			return validatedColumnPairs.contains(columnPairKey);
+		}
+		
+		private void markAsValidated(String dependentColumn, String referencedColumn) {
+			String columnPairKey = generateColumnPairKey(dependentColumn, referencedColumn);
+			validatedColumnPairs.add(columnPairKey);
+		
+		}
+	
+		//getter for validatedColumnPairs
+		public static Set<String> getValidatedColumnPairs() {
+			return validatedColumnPairs;
 	}
 
 	private int workerIndex = 0;
@@ -306,6 +312,12 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 		ActorRef<DependencyWorker.Message> leastLoadedWorker = null;
 		int minTasks = Integer.MAX_VALUE;
+
+		if (isAlreadyValidated(dependentColumn, referencedColumn)) {
+			getContext().getLog().info("Validation skipped for already validated IND: {} -> {}", dependentColumn, referencedColumn);
+			return;
+		}
+
 		for (Map.Entry<ActorRef<DependencyWorker.Message>, Integer> entry : workerTaskTracker.entrySet()) {
 			if (entry.getValue() < minTasks) {
 				minTasks = entry.getValue();
@@ -382,7 +394,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 		Set<String> referencedSet = new HashSet<>();
 		for (String[] row : message.referencedColumn) {
-			if (row[0] != null || !row[0].trim().isEmpty()) {
+			if (row[0] != null && !row[0].trim().isEmpty() && !" ".equals(row[0])) {
 				referencedSet.add(row[0]);
 			}
 		}
@@ -390,7 +402,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 		boolean isValidInd = true;
 		for (String[] row : message.dependentColumn) {
-			if (row[0] == null || row[0].trim().isEmpty() || !referencedSet.contains(row[0])) {
+			if (row[0] == null || row[0].trim().isEmpty() || !referencedSet.contains(row[0]) || " ".equals(row[0])) {
 				isValidInd = false;
 				break;
 			}
@@ -485,10 +497,10 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		return this;
 	}
 
-	private int minBatchSize = 1000;
+	private int minBatchSize = 4000;
 	private int maxBatchSize = 20000;
 	private int currentBatchSize = 10000;
-	private long averageTaskTime = 5000;
+	private long averageTaskTime = 7000;
 
 	private void adjustBatchSize(long taskTime) {
 		if (taskTime < averageTaskTime) {

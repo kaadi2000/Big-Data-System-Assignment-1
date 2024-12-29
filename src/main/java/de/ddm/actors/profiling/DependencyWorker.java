@@ -3,7 +3,6 @@ package de.ddm.actors.profiling;
 import java.io.File;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Random;
 import java.util.Set;
 
 import akka.actor.typed.ActorRef;
@@ -131,15 +130,18 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 
 	private Behavior<Message> handle(TaskMessage message) {
+
+		String columnPairKey = message.getDependentColumn() + "->" + message.getReferencedColumn();
+		String reverseColumnPairKey = message.getReferencedColumn() + "->" + message.getDependentColumn();
+
+		if (DependencyMiner.getValidatedColumnPairs().contains(columnPairKey) || DependencyMiner.getValidatedColumnPairs().contains(reverseColumnPairKey) || " ".equals(message.getDependentColumn()) || " ".equals(message.getReferencedColumn())) {
+			getContext().getLog().info("Skipping task as IND already validated: {} -> {}", message.getDependentColumn(), message.getReferencedColumn());
+			return this;
+		}
+
 		this.getContext().getLog().info("Validating IND: {}[{}] -> {}[{}]", message.getDependentFile().getName(), message.getDependentColumn(), message.getReferencedFile().getName(), message.getReferencedColumn());
 	
-		// Perform some processing (simulate work or validation logic)
-		long time = System.currentTimeMillis();
-		Random rand = new Random();
-		int runtime = (rand.nextInt(2) + 2) * 1000;
-		while (System.currentTimeMillis() - time < runtime) {
-			// Simulate computation 
-		}
+		
 		InclusionDependency realResult = new InclusionDependency(message.getDependentFile(), new String[]{message.getDependentColumn()}, message.getReferencedFile(), new String[]{message.getReferencedColumn()});
 	
 		LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), realResult);
@@ -155,7 +157,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 		Set<String> referencedSet = new HashSet<>();
 		for (String[] row : message.referencedColumn) {
-			if (row[0] != null || !row[0].trim().isEmpty()) {
+			if (row[0] != null && !row[0].trim().isEmpty() && !" ".equals(row[0])) {
 				referencedSet.add(row[0]);
 			}
 		}
@@ -163,7 +165,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 		boolean isValidInd = true;
 		for (String[] row : message.dependentColumn) {
-			if (row[0] == null || row[0].trim().isEmpty() || !referencedSet.contains(row[0])) {
+			if (row[0] == null || row[0].trim().isEmpty() || !referencedSet.contains(row[0]) || !" ".equals(row[0])) {
 				isValidInd = false;
 				break;
 			}
