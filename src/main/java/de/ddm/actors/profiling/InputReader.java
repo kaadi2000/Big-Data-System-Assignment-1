@@ -72,14 +72,8 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 
         this.id = id;
         this.reader = InputConfigurationSingleton.get().createCSVReader(inputFile);
-        this.header = InputConfigurationSingleton.get().getHeader(inputFile);
+        this.header = parseHeader();
         this.cachedRows = new ArrayList<>();
-        this.eofReached = false;
-
-        if (InputConfigurationSingleton.get().isFileHasHeader()) {
-            String[] headerRow = this.reader.readNext();
-            getContext().getLog().info("Extracted header for file {}: {}", inputFile.getName(), String.join(", ", headerRow));
-        }
     }
 
     /////////////////
@@ -90,7 +84,6 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
     private final CSVReader reader;
     private final String[] header;
     private final List<String[]> cachedRows;
-    private boolean eofReached;
 
     ////////////////////
     // Actor Behavior //
@@ -105,6 +98,18 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
                 .build();
     }
 
+    private String[] parseHeader() throws IOException, CsvValidationException {
+        String[] headerLine = reader.readNext();
+        if (headerLine == null) {
+            throw new IOException("Empty file or missing header for file ID " + id);
+        }
+        return splitRow(headerLine[0]);
+    }
+
+    private String[] splitRow(String row) {
+        return row.split(",");
+    }
+
     private Behavior<Message> handle(ReadHeaderMessage message) {
         message.getReplyTo().tell(new DependencyMiner.HeaderMessage(this.id, this.header));
         getContext().getLog().info("Header sent for file ID {}: {}", this.id, String.join(", ", this.header));
@@ -113,62 +118,28 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 
     private Behavior<Message> handle(ReadBatchMessage message) throws IOException, CsvValidationException {
         List<String[]> batch = new ArrayList<>(message.getBatchSize());
-        int linesRead = 0;
-
         for (int i = 0; i < message.getBatchSize(); i++) {
-            String[] line = this.reader.readNext();
-            if (line == null){
-				break;
-			}
-
-            if(isBlankRow(cleanRow(line))){
-                continue;
+            String[] line = reader.readNext();
+            if (line == null) {
+                break;
             }
-
-            batch.add(line);
-            linesRead++;
+            batch.add(splitRow(line[0]));
         }
 
         if (!batch.isEmpty()) {
             message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, batch));
-            getContext().getLog().info("Batch sent for file ID {}: {} rows", this.id, linesRead);
+            getContext().getLog().info("Batch sent for file ID {}: {} rows", this.id, batch.size());
         } else {
             getContext().getLog().info("No more rows to read for file ID {}", this.id);
         }
 
-        if(eofReached) {
-            message.getReplyTo().tell(new DependencyMiner.EndOfFileMessage(this.id, message.getReplyTo()));
-            getContext().getLog().info("End of file reached for file ID {}", this.id);
-        }
-
         return this;
-    }
 
-    private String[] cleanRow(String[] row) {
-        for (int i = 0; i < row.length; i++) {
-            if (row[i] != null) {
-                row[i] = row[i].trim(); // Remove leading and trailing spaces
-            }
-        }
-        return row;
-    }
-    
-    private boolean isBlankRow(String[] row) {
-        for (String value : row) {
-            if (value != null && !value.isEmpty()) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private Behavior<Message> handle(PostStop signal) throws IOException {
-        try {
-            this.reader.close();
-            getContext().getLog().info("Closed CSVReader for file ID {}", this.id);
-        } catch (IOException e) {
-            getContext().getLog().error("Error closing CSVReader for file ID {}: {}", this.id, e.getMessage());
-        }
+        this.reader.close();
+        getContext().getLog().info("Closed CSVReader for file ID {}", this.id);
         return this;
     }
 }

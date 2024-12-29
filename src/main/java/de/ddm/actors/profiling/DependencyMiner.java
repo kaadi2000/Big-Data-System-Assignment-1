@@ -158,6 +158,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
 	private final Map<String, Set<String>> dependencyGraph = new HashMap<>();
 
+	private final Map<ActorRef<DependencyWorker.Message>, Integer> workerTaskTracker = new HashMap<>();
+
+
 
 	////////////////////
 	// Actor Behavior //
@@ -301,22 +304,33 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private void sendValidationTask(int dependentFileId, String dependentColumn, 
                                 int referencedFileId, String referencedColumn) {
 
-		String columnPairKey = generateColumnPairKey(dependentColumn, referencedColumn);
-
-		if (validatedColumnPairs.contains(columnPairKey)) {
-			getContext().getLog().info("Validation skipped for already validated pair: {} -> {}", dependentColumn, referencedColumn);
-			return;
+		ActorRef<DependencyWorker.Message> leastLoadedWorker = null;
+		int minTasks = Integer.MAX_VALUE;
+		for (Map.Entry<ActorRef<DependencyWorker.Message>, Integer> entry : workerTaskTracker.entrySet()) {
+			if (entry.getValue() < minTasks) {
+				minTasks = entry.getValue();
+				leastLoadedWorker = entry.getKey();
+			}
 		}
-		getContext().getLog().info("Preparing task for validation: {}[{}] -> {}[{}]", inputFiles[dependentFileId].getName(), dependentColumn, inputFiles[referencedFileId].getName(), referencedColumn);
 
-		// Get the next worker in round-robin fashion
-		ActorRef<DependencyWorker.Message> worker = this.dependencyWorkers.get(workerIndex);
-		workerIndex = (workerIndex + 1) % this.dependencyWorkers.size();
-		
-		pendingTasks++;
-		worker.tell(new DependencyWorker.TaskMessage(
-			this.largeMessageProxy, inputFiles[dependentFileId], dependentColumn, inputFiles[referencedFileId], referencedColumn));
+		if (leastLoadedWorker != null) {
+			// Increment task count for this worker
+			workerTaskTracker.put(leastLoadedWorker, workerTaskTracker.get(leastLoadedWorker) + 1);
 
+			// Assign the task
+			getContext().getLog().info("Assigning task: {}[{}] -> {}[{}] to Worker {}", 
+									inputFiles[dependentFileId].getName(), dependentColumn, 
+									inputFiles[referencedFileId].getName(), referencedColumn, leastLoadedWorker);
+
+			leastLoadedWorker.tell(new DependencyWorker.TaskMessage(
+				this.largeMessageProxy, inputFiles[dependentFileId], dependentColumn, inputFiles[referencedFileId], referencedColumn));
+
+			pendingTasks++;
+		} else {
+			getContext().getLog().error("No available workers to assign the task: {}[{}] -> {}[{}]", 
+										inputFiles[dependentFileId].getName(), dependentColumn, 
+										inputFiles[referencedFileId].getName(), referencedColumn);
+		}
 	}
 
 
@@ -345,16 +359,18 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private Behavior<Message> handle(RegistrationMessage message) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
+
 		if (!this.dependencyWorkers.contains(dependencyWorker)) {
 			this.dependencyWorkers.add(dependencyWorker);
+			workerTaskTracker.put(dependencyWorker, 0); // Initialize task count
 			this.getContext().watch(dependencyWorker);
+
 			// The worker should get some work ... let me send her something before I figure out what I actually want from her.
 			// I probably need to idle the worker for a while, if I do not have work for it right now ... (see master/worker pattern)
 			
-			if(allHeadersReceived()){
+			if (allHeadersReceived()) {
 				generateCandidates();
 			}
-
 			//dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, this.getNextTaskId()));
 		}
 		return this;
@@ -405,14 +421,12 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		if (message.getResult() != null) {
 			InclusionDependency ind = message.getResult();
 			this.getContext().getLog().info("Worker {} produced a valid IND: {}", dependencyWorker, ind);
-			String dependentColumn = ind.getDependentAttributes()[0];
-        	String referencedColumn = ind.getReferencedAttributes()[0];
-
-			markAsValidated(dependentColumn, referencedColumn);
-        	markAsValidated(referencedColumn, dependentColumn);
-
-			addToDependencyGraph(dependentColumn, referencedColumn);
-	
+		
+			markAsValidated(ind.getDependentAttributes()[0], ind.getReferencedAttributes()[0]);
+			markAsValidated(ind.getReferencedAttributes()[0], ind.getDependentAttributes()[0]);
+		
+			addToDependencyGraph(ind.getDependentAttributes()[0], ind.getReferencedAttributes()[0]);
+		
 			List<InclusionDependency> inds = new ArrayList<>(1);
 			inds.add(ind);
 			this.resultCollector.tell(new ResultCollector.ResultMessage(inds));
@@ -420,6 +434,11 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			this.getContext().getLog().info("Worker {} reported no valid IND.", dependencyWorker);
 		}
 
+		long taskTime = System.currentTimeMillis() - startTime;
+    	adjustBatchSize(taskTime);
+		
+		workerTaskTracker.put(dependencyWorker, workerTaskTracker.get(dependencyWorker) - 1);
+		
 		pendingTasks--;
 		checkForCompletion();
 	
@@ -464,6 +483,20 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		}
 
 		return this;
+	}
+
+	private int minBatchSize = 1000;
+	private int maxBatchSize = 20000;
+	private int currentBatchSize = 10000;
+	private long averageTaskTime = 5000;
+
+	private void adjustBatchSize(long taskTime) {
+		if (taskTime < averageTaskTime) {
+			currentBatchSize = Math.min(maxBatchSize, currentBatchSize + 1000);
+		} else if (taskTime > averageTaskTime) {
+			currentBatchSize = Math.max(minBatchSize, currentBatchSize - 1000);
+		}
+		getContext().getLog().info("Adjusted batch size to: {}", currentBatchSize);
 	}
 
 	private void checkForCompletion() {
