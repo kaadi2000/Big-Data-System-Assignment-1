@@ -131,6 +131,14 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 	private Behavior<Message> handle(TaskMessage message) {
 
+		if (message == null || message.dependentColumn.equals("dependentColumnName") && message.referencedColumn.equals("referencedColumnName")) {
+			this.getContext().getLog().info("No valid task assigned, shutting down worker.");
+			return Behaviors.stopped();
+		}
+		
+		if ("dependentColumnName".equals(message.getDependentColumn()) || "referencedColumnName".equals(message.getReferencedColumn())) {
+        	return this;
+    	}
 		String columnPairKey = message.getDependentColumn() + "->" + message.getReferencedColumn();
 		String reverseColumnPairKey = message.getReferencedColumn() + "->" + message.getDependentColumn();
 

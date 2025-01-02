@@ -310,6 +310,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private void sendValidationTask(int dependentFileId, String dependentColumn, 
                                 int referencedFileId, String referencedColumn) {
 
+		if ("dependentColumnName".equals(dependentColumn) || "referencedColumnName".equals(referencedColumn)) {
+        	return;
+    	}
 		ActorRef<DependencyWorker.Message> leastLoadedWorker = null;
 		int minTasks = Integer.MAX_VALUE;
 
@@ -512,7 +515,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	}
 
 	private void checkForCompletion() {
-		if (pendingTasks == 0 && completedWorkers == dependencyWorkers.size()) {
+		if (pendingTasks == 0 && dependencyWorkers.isEmpty()) {
 			this.getContext().getLog().info("All tasks completed. Shutting down the master.");
 			end();
 		}
